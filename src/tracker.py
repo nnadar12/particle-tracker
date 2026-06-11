@@ -9,8 +9,8 @@ from skimage.filters import threshold_otsu
 from skimage.measure import label, regionprops
 
 # file selection menu
-DATA_DIR = "../data"
-OUTPUT_DIR = "../output"
+DATA_DIR = "data"
+OUTPUT_DIR = "output"
 
 if not os.path.exists(DATA_DIR):
     print(f"Error: Data directory '{DATA_DIR}' could not be found.")
