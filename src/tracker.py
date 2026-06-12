@@ -144,6 +144,7 @@ for frame_idx in range(total_frames):
     # Standardize canvas
     img_normalized = cv2.normalize(cropped_frame, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
     annotated_frame = cv2.cvtColor(img_normalized, cv2.COLOR_GRAY2BGR)
+    frame_h, frame_w, _ = annotated_frame.shape
 
     matched_current_indices = set()
     updated_active_objects = {}
@@ -230,17 +231,27 @@ for frame_idx in range(total_frames):
                     'Rotation_Delta': d_theta
                 })
 
+                # --- GRAPHIC LAYERING OVERLAYS WITH COORDINATES ---
                 min_row, min_col, max_row, max_col = det_data['bbox']
                 box_color = (0, 255, 0) if display_class == "single" else (255, 0, 0)
                 if display_class == "pending": box_color = (0, 165, 255)
 
+                # Draw bounding box and center tracking dot
                 cv2.rectangle(annotated_frame, (min_col, min_row), (max_col, max_row), box_color, 1)
                 cv2.circle(annotated_frame, (int(cx), int(cy)), 3, (0, 0, 255), -1)
 
-                text_y = max(15, min_row - 8)
-                cv2.putText(annotated_frame, f"{display_id}", (min_col, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.35, box_color, 1, cv2.LINE_AA)
+                # Stable stacked text placement (ID above box, telemetry parameters below box)
+                id_text_y = max(12, min_row - 4)
+                cv2.putText(annotated_frame, f"{display_id}", (min_col, id_text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.35, box_color, 1, cv2.LINE_AA)
+
+                # Coordinates Placement below bounding box base (Color set to bright Yellow)
+                coords_text_y = min(frame_h - 12, max_row + 11)
+                cv2.putText(annotated_frame, f"X:{int(cx)} Y:{int(cy)}", (min_col, coords_text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (0, 255, 255), 1, cv2.LINE_AA)
+
+                # Delta rotation tracker
                 if obj_data['final_id']:
-                    cv2.putText(annotated_frame, f"rot: {d_theta:.2f}", (min_col, text_y + 12), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (0, 200, 255), 1, cv2.LINE_AA)
+                    rot_text_y = min(frame_h - 2, coords_text_y + 10)
+                    cv2.putText(annotated_frame, f"rot: {d_theta:.2f}", (min_col, rot_text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (0, 200, 255), 1, cv2.LINE_AA)
 
     # --- REGISTRATION FOR NEW ENTITIES ---
     for det_idx, det_data in enumerate(current_detections):
@@ -290,7 +301,13 @@ for frame_idx in range(total_frames):
 
         min_row, min_col, max_row, max_col = det_data['bbox']
         cv2.rectangle(annotated_frame, (min_col, min_row), (max_col, max_row), (255, 0, 150), 1)
-        cv2.putText(annotated_frame, f"NEW: {display_id}", (min_col, max(15, min_row - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255, 0, 150), 1, cv2.LINE_AA)
+
+        id_text_y = max(12, min_row - 4)
+        cv2.putText(annotated_frame, f"NEW: {display_id}", (min_col, id_text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255, 0, 150), 1, cv2.LINE_AA)
+
+        # Coordinates for incoming objects (Color set to bright Yellow)
+        coords_text_y = min(frame_h - 4, max_row + 11)
+        cv2.putText(annotated_frame, f"X:{int(cx)} Y:{int(cy)}", (min_col, coords_text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (0, 255, 255), 1, cv2.LINE_AA)
 
     active_objects = updated_active_objects
 
@@ -298,16 +315,12 @@ for frame_idx in range(total_frames):
     if EXPORT_MODE == "frames":
         cv2.imwrite(os.path.join(frames_dir, f"frame_{frame_idx:04d}.png"), annotated_frame)
     else:
-        # Lazy initialization of VideoWriter using the runtime shape of the processed frame
         if video_writer is None:
-            height, width, _ = annotated_frame.shape
             video_path = os.path.join(run_dir, f"{file_slug}_tracked_output.mp4")
             fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-            # Exporting at 12.0 FPS for smooth microfluidic playback speeds
-            video_writer = cv2.VideoWriter(video_path, fourcc, 12.0, (width, height))
+            video_writer = cv2.VideoWriter(video_path, fourcc, 12.0, (frame_w, frame_h))
         video_writer.write(annotated_frame)
 
-# Clean up resources if video stream was initialized
 if video_writer is not None:
     video_writer.release()
 
