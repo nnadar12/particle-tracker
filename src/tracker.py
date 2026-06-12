@@ -72,20 +72,20 @@ Y_MIN, Y_MAX = 48, 180
 X_MIN, X_MAX = 0, 511
 
 MAX_TRACKING_DISTANCE = 60
-EDGE_BUFFER_ZONE = 35  # Pixels from left edge where objects are considered "clipping"
+EDGE_BUFFER_ZONE = 35  # Buffer to allow objects to fully clear the edge crop line
 
 cluster_counter = 1
 single_counter = 1
-internal_id_counter = 1  # Universal counter for temporary tracking keys
+internal_id_counter = 1
 
-# Registry: { internal_id: {centroid, orientation, final_id, database_indices} }
+# Registry: { internal_id: {centroid, orientation, final_id, assigned_class, database_indices} }
 active_objects = {}
 all_frames_data = []
 
 # ==========================================
 # 4. CORE MULTI-OBJECT LOOP
 # ==========================================
-print("[+] Processing frames, tracking IDs, and resolving edge-cases...")
+print("[+] Processing frames with One-Way Cluster Upgrade Logic...")
 
 for frame_idx in range(total_frames):
     raw_frame = video_stack[frame_idx]
@@ -94,7 +94,7 @@ for frame_idx in range(total_frames):
     # Preprocessing & Clean masking
     thresh_value = threshold_otsu(cropped_frame)
     binary_frame = cropped_frame < thresh_value
-    binary_frame[0:15, :] = False  # Clear top bar channel artifact
+    binary_frame[0:15, :] = False  # Clear top edge artifacts
 
     # Feature extraction
     label_image = label(binary_frame)
@@ -102,12 +102,12 @@ for frame_idx in range(total_frames):
 
     current_detections = []
     for prop in regions:
-        if prop.area < 40:  # Noise threshold filter
+        if prop.area < 40:
             continue
 
         cy, cx = prop.centroid
 
-        # Immediate/instant classification metrics for this specific frame
+        # Frame-by-frame snapshot analysis
         if prop.area > 350 or prop.eccentricity > 0.60:
             instant_class = "cluster"
         else:
@@ -120,7 +120,7 @@ for frame_idx in range(total_frames):
             'instant_class': instant_class
         })
 
-    # Standardize image canvas for color annotations
+    # Standardize canvas
     img_normalized = cv2.normalize(cropped_frame, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
     annotated_frame = cv2.cvtColor(img_normalized, cv2.COLOR_GRAY2BGR)
 
@@ -150,31 +150,48 @@ for frame_idx in range(total_frames):
                 obj_data = active_objects[int_id]
                 cx, cy = det_data['centroid']
 
-                # Calculate deltas
+                # Calculate physics deltas
                 dx = cx - obj_data['centroid'][0]
                 dy = cy - obj_data['centroid'][1]
                 d_theta = det_data['orientation'] - obj_data['orientation']
                 if d_theta > np.pi / 2: d_theta -= np.pi
                 elif d_theta < -np.pi / 2: d_theta += np.pi
 
-                # Check if this pending particle has cleared the edge buffer zone
-                if obj_data['final_id'] is None and cx >= EDGE_BUFFER_ZONE:
-                    # Clear of the edge! Evaluate true shape attributes safely
-                    if det_data['instant_class'] == "cluster":
+                # --- ONE-WAY UPGRADE & PROBATION LOGIC ---
+                if det_data['instant_class'] == "cluster":
+                    # Scenario A: Object cleared probation zone as a cluster
+                    if obj_data['final_id'] is None and cx >= EDGE_BUFFER_ZONE:
                         obj_data['final_id'] = f"cluster{cluster_counter:02d}"
                         obj_data['assigned_class'] = "cluster"
                         cluster_counter += 1
-                    else:
+                        for h_idx in obj_data['database_indices']:
+                            all_frames_data[h_idx]['Object_ID'] = obj_data['final_id']
+                            all_frames_data[h_idx]['Class'] = obj_data['assigned_class']
+
+                    # Scenario B: Already active single particle transforms / rotates to reveal it's a cluster!
+                    elif obj_data['assigned_class'] == "single":
+                        obj_data['final_id'] = f"cluster{cluster_counter:02d}"
+                        obj_data['assigned_class'] = "cluster"
+                        cluster_counter += 1
+                        # Retroactively convert all historical rows in the tracking database
+                        for h_idx in obj_data['database_indices']:
+                            all_frames_data[h_idx]['Object_ID'] = obj_data['final_id']
+                            all_frames_data[h_idx]['Class'] = obj_data['assigned_class']
+
+                elif det_data['instant_class'] == "single":
+                    # Scenario C: Object cleared probation zone as a single
+                    if obj_data['final_id'] is None and cx >= EDGE_BUFFER_ZONE:
                         obj_data['final_id'] = f"single{single_counter:02d}"
                         obj_data['assigned_class'] = "single"
                         single_counter += 1
+                        for h_idx in obj_data['database_indices']:
+                            all_frames_data[h_idx]['Object_ID'] = obj_data['final_id']
+                            all_frames_data[h_idx]['Class'] = obj_data['assigned_class']
 
-                    # Retroactively clean up names in the database for previous frames
-                    for history_idx in obj_data['database_indices']:
-                        all_frames_data[history_idx]['Object_ID'] = obj_data['final_id']
-                        all_frames_data[history_idx]['Class'] = obj_data['assigned_class']
+                    # Scenario D: It is already a locked 'cluster' but reads as a 'single' due to 3D rotation.
+                    # We pass through silently here—retaining its cluster identity.
 
-                # Update tracking registry
+                # Update track records
                 updated_active_objects[int_id] = {
                     'centroid': det_data['centroid'],
                     'orientation': det_data['orientation'],
@@ -183,7 +200,6 @@ for frame_idx in range(total_frames):
                     'database_indices': obj_data['database_indices']
                 }
 
-                # Log current entry into dataframe history list
                 db_row_idx = len(all_frames_data)
                 obj_data['database_indices'].append(db_row_idx)
 
@@ -202,9 +218,10 @@ for frame_idx in range(total_frames):
                     'Rotation_Delta': d_theta
                 })
 
-                # --- GRAPHIC LAYERING OVERLAYS ---
+                # Render Overlays
                 min_row, min_col, max_row, max_col = det_data['bbox']
-                box_color = (0, 255, 0) if obj_data['final_id'] else (0, 165, 255) # Green vs Orange for Pending
+                box_color = (0, 255, 0) if display_class == "single" else (255, 0, 0) # Green for Single, Blue for Cluster
+                if display_class == "pending": box_color = (0, 165, 255) # Orange
 
                 cv2.rectangle(annotated_frame, (min_col, min_row), (max_col, max_row), box_color, 1)
                 cv2.circle(annotated_frame, (int(cx), int(cy)), 3, (0, 0, 255), -1)
@@ -214,7 +231,7 @@ for frame_idx in range(total_frames):
                 if obj_data['final_id']:
                     cv2.putText(annotated_frame, f"rot: {d_theta:.2f}", (min_col, text_y + 12), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (0, 200, 255), 1, cv2.LINE_AA)
 
-    # --- REGISTRATION FOR NEW ENTITIES (BIRTH CONTROL) ---
+    # --- REGISTRATION FOR NEW ENTITIES ---
     for det_idx, det_data in enumerate(current_detections):
         if det_idx in matched_current_indices:
             continue
@@ -223,7 +240,7 @@ for frame_idx in range(total_frames):
         final_id = None
         assigned_class = None
 
-        # If it spawns deep inside the channel already, bypass probation step
+        # Direct generation if spawned completely clear of probation lines
         if cx >= EDGE_BUFFER_ZONE:
             if det_data['instant_class'] == "cluster":
                 final_id = f"cluster{cluster_counter:02d}"
@@ -234,7 +251,6 @@ for frame_idx in range(total_frames):
                 assigned_class = "single"
                 single_counter += 1
 
-        # Create records
         int_id = internal_id_counter
         internal_id_counter += 1
 
@@ -262,7 +278,6 @@ for frame_idx in range(total_frames):
             'Rotation_Delta': 0.0
         })
 
-        # Frame overlay for new arrival
         min_row, min_col, max_row, max_col = det_data['bbox']
         cv2.rectangle(annotated_frame, (min_col, min_row), (max_col, max_row), (255, 0, 150), 1)
         cv2.putText(annotated_frame, f"NEW: {display_id}", (min_col, max(15, min_row - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255, 0, 150), 1, cv2.LINE_AA)
@@ -271,14 +286,13 @@ for frame_idx in range(total_frames):
     cv2.imwrite(os.path.join(frames_dir, f"frame_{frame_idx:04d}.png"), annotated_frame)
 
 # ==========================================
-# 5. MONOLITHIC EXPORT TO CLEAN SINGLE CSV
+# 5. EXPORT MASTER TIED FILE
 # ==========================================
 df = pd.DataFrame(all_frames_data)
 csv_output_path = os.path.join(run_dir, "particle_tracks.csv")
 df.to_csv(csv_output_path, index=False)
 
 print("\n" + "=" * 60)
-print("SUCCESS: Edge-case tracking calibration complete.")
+print("SUCCESS: Dynamic One-Way Cluster Upgrade configuration finalized.")
 print(f"-> Master Data Spreadsheet: {csv_output_path}")
-print(f"-> Annotated Frame Collection: {total_frames} files inside {frames_dir}")
 print("=" * 60 + "\n")
