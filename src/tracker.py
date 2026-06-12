@@ -9,7 +9,7 @@ from skimage.filters import threshold_otsu
 from skimage.measure import label, regionprops
 
 # ==========================================
-# 1. TUI COMPONENT - FILE SELECTION MENU
+# 1. TUI COMPONENT - FILE & OUTPUT SELECTION
 # ==========================================
 DATA_DIR = "../data"
 OUTPUT_DIR = "../output"
@@ -32,6 +32,7 @@ for idx, filename in enumerate(tiff_files, 1):
     print(f"  [{idx}] {filename}")
 print("=" * 60)
 
+# Menu A: Source File Selection
 while True:
     try:
         user_input = input("Select a file number to process (or 'q' to quit): ").strip()
@@ -48,6 +49,21 @@ while True:
     except ValueError:
         print("Invalid entry. Please enter an integer.")
 
+# Menu B: Export Format Selection Toggle
+print("\n" + "-" * 40)
+print("  SELECT OUTPUT EXPORT FORMAT")
+print("----------------------------------------")
+print("  [1] Individual PNG Frames Folder (High-disk space / Scannable)")
+print("  [2] Compiled MP4 Video File     (Low-disk space / Shareable)")
+print("-" * 40)
+
+while True:
+    output_selection = input("Select export mode [1 or 2]: ").strip()
+    if output_selection in ('1', '2'):
+        EXPORT_MODE = "frames" if output_selection == '1' else "video"
+        break
+    print("Invalid option. Please enter 1 for Frames or 2 for Video.")
+
 # ==========================================
 # 2. SETUP RUN DIRECTORIES
 # ==========================================
@@ -55,15 +71,22 @@ tiff_path = os.path.join(DATA_DIR, TIFF_FILENAME)
 video_stack = tiff.imread(tiff_path)
 total_frames = len(video_stack)
 
-print(f"\n[+] Successfully loaded '{TIFF_FILENAME}' ({total_frames} frames).")
+print(f"\n[+] Loaded '{TIFF_FILENAME}' ({total_frames} frames).")
 
 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 file_slug = os.path.splitext(TIFF_FILENAME)[0]
 run_dir = os.path.join(OUTPUT_DIR, f"run_{file_slug}_{timestamp}")
-frames_dir = os.path.join(run_dir, "annotated_frames")
+os.makedirs(run_dir, exist_ok=True)
 
-os.makedirs(frames_dir, exist_ok=True)
-print(f"[+] Initialized output directory: {run_dir}")
+frames_dir = None
+video_writer = None
+
+if EXPORT_MODE == "frames":
+    frames_dir = os.path.join(run_dir, "annotated_frames")
+    os.makedirs(frames_dir, exist_ok=True)
+    print(f"[+] Output Target: Frames directory -> {frames_dir}")
+else:
+    print(f"[+] Output Target: Compressed MP4 Video File Container")
 
 # ==========================================
 # 3. TRACKING & CLASSIFICATION PARAMETERS
@@ -72,20 +95,19 @@ Y_MIN, Y_MAX = 48, 180
 X_MIN, X_MAX = 0, 511
 
 MAX_TRACKING_DISTANCE = 60
-EDGE_BUFFER_ZONE = 35  # Buffer to allow objects to fully clear the edge crop line
+EDGE_BUFFER_ZONE = 35
 
 cluster_counter = 1
 single_counter = 1
 internal_id_counter = 1
 
-# Registry: { internal_id: {centroid, orientation, final_id, assigned_class, database_indices} }
 active_objects = {}
 all_frames_data = []
 
 # ==========================================
 # 4. CORE MULTI-OBJECT LOOP
 # ==========================================
-print("[+] Processing frames with One-Way Cluster Upgrade Logic...")
+print(f"[+] Processing timeline via ({EXPORT_MODE.upper()}) pipeline...")
 
 for frame_idx in range(total_frames):
     raw_frame = video_stack[frame_idx]
@@ -94,7 +116,7 @@ for frame_idx in range(total_frames):
     # Preprocessing & Clean masking
     thresh_value = threshold_otsu(cropped_frame)
     binary_frame = cropped_frame < thresh_value
-    binary_frame[0:15, :] = False  # Clear top edge artifacts
+    binary_frame[0:15, :] = False
 
     # Feature extraction
     label_image = label(binary_frame)
@@ -107,7 +129,6 @@ for frame_idx in range(total_frames):
 
         cy, cx = prop.centroid
 
-        # Frame-by-frame snapshot analysis
         if prop.area > 350 or prop.eccentricity > 0.60:
             instant_class = "cluster"
         else:
@@ -150,7 +171,6 @@ for frame_idx in range(total_frames):
                 obj_data = active_objects[int_id]
                 cx, cy = det_data['centroid']
 
-                # Calculate physics deltas
                 dx = cx - obj_data['centroid'][0]
                 dy = cy - obj_data['centroid'][1]
                 d_theta = det_data['orientation'] - obj_data['orientation']
@@ -159,7 +179,6 @@ for frame_idx in range(total_frames):
 
                 # --- ONE-WAY UPGRADE & PROBATION LOGIC ---
                 if det_data['instant_class'] == "cluster":
-                    # Scenario A: Object cleared probation zone as a cluster
                     if obj_data['final_id'] is None and cx >= EDGE_BUFFER_ZONE:
                         obj_data['final_id'] = f"cluster{cluster_counter:02d}"
                         obj_data['assigned_class'] = "cluster"
@@ -168,18 +187,15 @@ for frame_idx in range(total_frames):
                             all_frames_data[h_idx]['Object_ID'] = obj_data['final_id']
                             all_frames_data[h_idx]['Class'] = obj_data['assigned_class']
 
-                    # Scenario B: Already active single particle transforms / rotates to reveal it's a cluster!
                     elif obj_data['assigned_class'] == "single":
                         obj_data['final_id'] = f"cluster{cluster_counter:02d}"
                         obj_data['assigned_class'] = "cluster"
                         cluster_counter += 1
-                        # Retroactively convert all historical rows in the tracking database
                         for h_idx in obj_data['database_indices']:
                             all_frames_data[h_idx]['Object_ID'] = obj_data['final_id']
                             all_frames_data[h_idx]['Class'] = obj_data['assigned_class']
 
                 elif det_data['instant_class'] == "single":
-                    # Scenario C: Object cleared probation zone as a single
                     if obj_data['final_id'] is None and cx >= EDGE_BUFFER_ZONE:
                         obj_data['final_id'] = f"single{single_counter:02d}"
                         obj_data['assigned_class'] = "single"
@@ -188,10 +204,6 @@ for frame_idx in range(total_frames):
                             all_frames_data[h_idx]['Object_ID'] = obj_data['final_id']
                             all_frames_data[h_idx]['Class'] = obj_data['assigned_class']
 
-                    # Scenario D: It is already a locked 'cluster' but reads as a 'single' due to 3D rotation.
-                    # We pass through silently here—retaining its cluster identity.
-
-                # Update track records
                 updated_active_objects[int_id] = {
                     'centroid': det_data['centroid'],
                     'orientation': det_data['orientation'],
@@ -218,10 +230,9 @@ for frame_idx in range(total_frames):
                     'Rotation_Delta': d_theta
                 })
 
-                # Render Overlays
                 min_row, min_col, max_row, max_col = det_data['bbox']
-                box_color = (0, 255, 0) if display_class == "single" else (255, 0, 0) # Green for Single, Blue for Cluster
-                if display_class == "pending": box_color = (0, 165, 255) # Orange
+                box_color = (0, 255, 0) if display_class == "single" else (255, 0, 0)
+                if display_class == "pending": box_color = (0, 165, 255)
 
                 cv2.rectangle(annotated_frame, (min_col, min_row), (max_col, max_row), box_color, 1)
                 cv2.circle(annotated_frame, (int(cx), int(cy)), 3, (0, 0, 255), -1)
@@ -240,7 +251,6 @@ for frame_idx in range(total_frames):
         final_id = None
         assigned_class = None
 
-        # Direct generation if spawned completely clear of probation lines
         if cx >= EDGE_BUFFER_ZONE:
             if det_data['instant_class'] == "cluster":
                 final_id = f"cluster{cluster_counter:02d}"
@@ -283,16 +293,36 @@ for frame_idx in range(total_frames):
         cv2.putText(annotated_frame, f"NEW: {display_id}", (min_col, max(15, min_row - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255, 0, 150), 1, cv2.LINE_AA)
 
     active_objects = updated_active_objects
-    cv2.imwrite(os.path.join(frames_dir, f"frame_{frame_idx:04d}.png"), annotated_frame)
+
+    # --- DYNAMIC DISK WRITE ROUTER ---
+    if EXPORT_MODE == "frames":
+        cv2.imwrite(os.path.join(frames_dir, f"frame_{frame_idx:04d}.png"), annotated_frame)
+    else:
+        # Lazy initialization of VideoWriter using the runtime shape of the processed frame
+        if video_writer is None:
+            height, width, _ = annotated_frame.shape
+            video_path = os.path.join(run_dir, f"{file_slug}_tracked_output.mp4")
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            # Exporting at 12.0 FPS for smooth microfluidic playback speeds
+            video_writer = cv2.VideoWriter(video_path, fourcc, 12.0, (width, height))
+        video_writer.write(annotated_frame)
+
+# Clean up resources if video stream was initialized
+if video_writer is not None:
+    video_writer.release()
 
 # ==========================================
-# 5. EXPORT MASTER TIED FILE
+# 5. MASTER TRACK DATASET EXPORT
 # ==========================================
 df = pd.DataFrame(all_frames_data)
 csv_output_path = os.path.join(run_dir, "particle_tracks.csv")
 df.to_csv(csv_output_path, index=False)
 
 print("\n" + "=" * 60)
-print("SUCCESS: Dynamic One-Way Cluster Upgrade configuration finalized.")
-print(f"-> Master Data Spreadsheet: {csv_output_path}")
+print("SUCCESS: Execution completed cleanly.")
+print(f"-> Metrics Sheet: {csv_output_path}")
+if EXPORT_MODE == "frames":
+    print(f"-> Visual Assets: {total_frames} PNG frames inside {frames_dir}")
+else:
+    print(f"-> Visual Assets: Compressed MP4 Video saved to {video_path}")
 print("=" * 60 + "\n")
