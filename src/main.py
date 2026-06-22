@@ -2,6 +2,7 @@ import os
 import sys
 from datetime import datetime
 import particle_tracker
+import cell_tracker
 
 DATA_DIR = "../data"
 OUTPUT_DIR = "../output"
@@ -34,24 +35,32 @@ def get_file_selection():
 
 def main():
     print("[1] Particle Tracker")
+    print("[2] Cell/Cluster Tracker (Phase 1: Equalization Test)")
     algo_choice = input("Select tracker algorithm: ")
 
     selected_file = get_file_selection()
-
-    print("\n[1] Individual PNG Frames\n[2] Compiled MP4 Video")
-    mode_choice = input("Select export mode [1 or 2]: ")
-    export_mode = "frames" if mode_choice == '1' else "video"
+    input_path = os.path.join(DATA_DIR, selected_file)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     file_slug = os.path.splitext(selected_file)[0]
-    run_dir = os.path.join(OUTPUT_DIR, f"run_{file_slug}_{timestamp}")
-    os.makedirs(run_dir, exist_ok=True)
 
+    # Route to Particle Tracker
     if algo_choice == '1':
+        print("\n[1] Individual PNG Frames\n[2] Compiled MP4 Video")
+        mode_choice = input("Select export mode [1 or 2]: ")
+        export_mode = "frames" if mode_choice == '1' else "video"
+
+        run_dir = os.path.join(OUTPUT_DIR, f"run_{file_slug}_{timestamp}")
+        os.makedirs(run_dir, exist_ok=True)
+
         particle_tracker.run_particle_tracker(
-            os.path.join(DATA_DIR, selected_file),
-            export_mode, run_dir, file_slug
+            input_path, export_mode, run_dir, file_slug
         )
+
+    # Route to Cell Tracker (Phase 1 Test)
+    elif algo_choice == '2':
+        output_path = os.path.join(OUTPUT_DIR, f"phase1_equalized_{file_slug}_{timestamp}.tif")
+        cell_tracker.run_cell_tracker(input_path, output_path)
 
 if __name__ == "__main__":
     main()
